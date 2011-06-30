@@ -1,25 +1,48 @@
 require 'ansi'
 require 'redcarpet'
 require 'erb'
-require 'pathname'
 require 'nokogiri'
 require 'albino'
 require 'sass'
 
+
 SETTINGS = {
-  :output_folder => 'out',
-  :source_folder => 'src',
-  :template_folder => 'templates',
-  :template => 'main'
+  :output_dir   => 'out',
+  :source_dir   => 'src',
+  :template_dir => 'templates',
+  :template     => 'main'
 }
 
-MARKDOWN_OPTIONS = [:hard_wrap, :autolink, :no_intraemphasis, :fenced_code, :gh_blockcode]
+MARKDOWN_OPTIONS = [
+  :hard_wrap, 
+  :autolink, 
+  :no_intraemphasis, 
+  :fenced_code, 
+  :gh_blockcode
+]
 
 
-def path opts={}
+def path_regex opts={}
+  opts[:folder] ||= SETTINGS[:source_dir]
   folder = opts[:folder].gsub /\./, '\.'
   extension = opts[:extension].gsub /\./, '\.'
   /#{folder}[\/.]+.*\.#{extension}/
+end
+
+def destination_of infile, opts={}
+  opts[:old_ext] ||= File.extname(infile)
+  opts[:new_ext] ||= opts[:old_ext]
+  opts[:old_ext] = '.' + opts[:old_ext] unless opts[:old_ext].match /^\..*/
+  opts[:new_ext] = '.' + opts[:new_ext] unless opts[:new_ext].match /^\..*/
+  
+  infile = File.absolute_path( infile )
+  source_dir = File.absolute_path( SETTINGS[:source_dir] )
+  output_dir = File.absolute_path( SETTINGS[:output_dir] )
+  
+  source_regex = Regexp.new( source_dir )
+  ext_regex = Regexp.new( opts[:old_ext].gsub(/\./,'\.') )
+  
+  infile.gsub( source_regex, output_dir ).gsub( ext_regex, opts[:new_ext] )
 end
 
 def notify ( message, type = :message, typetext = nil )
@@ -28,20 +51,15 @@ def notify ( message, type = :message, typetext = nil )
   color = ANSI::Code.yellow if type == :note
   
   typetext = :note.to_s if typetext.nil?
-  
-  puts "#{color+typetext.ljust(10)+ANSI::Code.reset} #{message}"
-end
-
-def template_filename
-  SETTINGS[:template_folder] + '/' + SETTINGS[:template] + '.html.erb'
+  puts "#{color + typetext.ljust(10) + ANSI::Code.reset} #{message}"
 end
 
 def apply_template
-  template = File.read(template_filename)
+  template_file = SETTINGS[:template_dir] + '/' + SETTINGS[:template] + '.html.erb'
+  template = File.read(template_file)
   ERB.new(template).result(binding)
 end
 
-# from http://railscasts.com/episodes/272-markdown-with-redcarpet
 def syntax_highlighter html
   doc = Nokogiri::HTML(html)
   doc.search("//pre[@lang]").each do |pre|
@@ -50,66 +68,68 @@ def syntax_highlighter html
   doc.to_s
 end
 
-def process_markdown file
-  source = File.read(file)
-  html = apply_template{ Redcarpet.new(source, *MARKDOWN_OPTIONS).to_html }
-  html = syntax_highlighter(html)
+def process_file infile, opts={}
+  opts[:message] ||= 'compile'
+  opts[:new_ext] ||= ''
   
-  filename = File.basename(file, File.extname(file))
-  outsubfolder = File.dirname(file).gsub(/#{SETTINGS[:source_folder]}\/?/,'') + '/'
-  outfile = SETTINGS[:output_folder] + '/' + outsubfolder + filename + '.html'
+  source = File.read(infile)
+  content = yield source
+  
+  outfile = destination_of infile, :new_ext => opts[:new_ext]
   FileUtils.mkdir_p File.dirname(outfile)
   
   File.open(outfile, 'w') do |f|
-    f.write(html)
+    f.write(content)
   end
   
-  notify file, :message, 'compile'
+  notify infile, :message, opts[:message]
 end
 
-def process_sass file
-  source = File.read(file)
-  
-  engine = Sass::Engine.new(source, :syntax => :scss)
-  css = engine.render
-  
-  filename = File.basename(file, File.extname(file))
-  outsubfolder = File.dirname(file).gsub(/#{SETTINGS[:source_folder]}\/?/,'') + '/'
-  outfile = SETTINGS[:output_folder] + '/' + outsubfolder + filename + '.css'
-  FileUtils.mkdir_p File.dirname(outfile)
-  
-  File.open(outfile, 'w') do |f|
-    f.write(css)
+def process_markdown infile
+  process_file infile, :new_ext => 'html' do |source| 
+    html = Redcarpet.new(source, *MARKDOWN_OPTIONS).to_html
+    html = apply_template{ html }
+    syntax_highlighter(html)
   end
-  
-  notify file, :message, 'compile'
+end
+
+def process_sass infile
+  process_file infile, :new_ext => 'css' do |source| 
+    engine = Sass::Engine.new(source, :syntax => :scss)
+    engine.render
+  end
 end
 
 
 
 
-puts "Now watching your source folder (#{SETTINGS[:source_folder]}/)"
+puts "Now watching #{SETTINGS[:source_dir]}/"
 puts "Press CTRL-C to quit"
+puts "-------------"
 
-watch path(:folder => SETTINGS[:source_folder], :extension => 'markdown') do |md|
-  process_markdown md[0]
-end
-
-watch path(:folder => SETTINGS[:template_folder], :extension => 'html.erb') do |md|
+# watch templates
+watch path_regex(:folder => SETTINGS[:template_dir], :extension => 'html.erb') do |md|
   notify md[0], :note, 'changed'
-  Dir[SETTINGS[:source_folder]+'/**/*.*'].each do |file|
+  Dir[SETTINGS[:source_dir]+'/**/*.*'].each do |file|
     process_markdown file
   end
 end
 
-watch path(:folder => SETTINGS[:source_folder], :extension => 'scss') do |md|
+# watch markdown files
+watch path_regex(:extension => 'markdown') do |md|
+  process_markdown md[0]
+end
+
+# watch sass files
+watch path_regex(:extension => 'scss') do |md|
   process_sass md[0]
 end
 
-watch path(:folder => SETTINGS[:source_folder], :extension => 'css') do |md|
-  src = md[0]
-  dst = SETTINGS[:output_folder] + '/' + src.gsub(/#{SETTINGS[:source_folder]}\/?/,'')
-  FileUtils.copy(src, dst)
+# watch css files
+watch path_regex(:extension => 'css') do |md|
+  dst = destination_of(md[0])
+  FileUtils.mkdir_p File.dirname(dst)
+  FileUtils.copy md[0], dst
   notify md[0], :message, 'copy'
 end
 
