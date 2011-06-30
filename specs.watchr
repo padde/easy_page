@@ -10,7 +10,7 @@ SETTINGS = {
   :output_folder => 'out',
   :source_folder => 'src',
   :template_folder => 'templates',
-  :template => 'crazy'
+  :template => 'main'
 }
 
 MARKDOWN_OPTIONS = [:hard_wrap, :autolink, :no_intraemphasis, :fenced_code, :gh_blockcode]
